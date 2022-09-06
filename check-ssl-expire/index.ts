@@ -56,7 +56,6 @@ const options = {
 };
 
 async function getCertificate(host: string, port?: number): Promise<CertificateInfo> {
-  // console.info('getCertificate', host, port);
   return new Promise((resolve, reject) => {
     const rq = request({ host, port, method: 'GET', rejectUnauthorized: false }, (res) => {
       if (res.socket instanceof TLSSocket) {
@@ -70,7 +69,6 @@ async function getCertificate(host: string, port?: number): Promise<CertificateI
           subjectaltname: certificateInfo.subjectaltname
         };
         resolve(info);
-        // console.info(certificateInfo);
       } else {
         reject(new Error('socet is not TLSSocket instance'));
       }
@@ -79,7 +77,6 @@ async function getCertificate(host: string, port?: number): Promise<CertificateI
     rq.on('error', reject);
 
     rq.end();
-    // console.info(rq);
   });
 }
 
