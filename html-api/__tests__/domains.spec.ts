@@ -84,13 +84,13 @@ describe('domains.ts', () => {
                 <tr><th>Domain</th><th>Status</th><th>Days Until Expiry</th><th></th><th></th></tr>
               </thead>
               <tbody>
-                <tr><td>Active</td><td><span class="textred">25 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=111">Renew This Domain</a></td>
+                <tr><td>Active</td><td><span class="textred">25 Days</span></td><td><span class="textgreen">Renewable</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=111">Renew This Domain</a></td>
                 </tr>
                 <tr><td>test1.tk</td><td>unknown</td><td><span class="textgreen">unknown</span></td><td><span class="textred">unknown</span></td><td>Renew This Domain</td>
                 </tr>
                 <tr><td>test2.ml</td><td>Active</td><td><span class="textgreen">40 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight">Renew This Domain</a></td>
                 </tr>
-                <tr><td>agato.tk</td><td>Active</td><td><span class="textgreen">164 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=114">Renew This Domain</a></td>
+                <tr><td>agato.tk</td><td>Active</td><td><span class="textgreen">14 Days</span></td><td><span class="textgreen">Renewable</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=114">Renew This Domain</a></td>
                 </tr>
                 <tr><td>foxy.tk</td><td>Active</td><td><span class="textgreen">171 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span> </td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=115">Renew This Domain</a></td>
                 </tr>
@@ -117,8 +117,8 @@ describe('domains.ts', () => {
           id: 114,
           name: 'agato.tk',
           isActive: true,
-          daysLeft: 164,
-          minRenewalDays: 14,
+          daysLeft: 14,
+          minRenewalDays: NaN,
           renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=114'
         },
         {
@@ -174,7 +174,7 @@ describe('domains.ts', () => {
                 <tr><th>Domain</th><th>Status</th><th>Days Until Expiry</th><th></th><th></th></tr>
               </thead>
               <tbody>
-                <tr><td>lead.gq</td><td>Active</td><td><span class="textred">25 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=111">Renew This Domain</a></td>
+                <tr><td>lead.gq</td><td>Active</td><td><span class="textred">13 Days</span></td><td><span class="textgreen">Renewable</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=111">Renew This Domain</a></td>
                 </tr>
                 <tr><td>liorro.tk</td><td>Active</td><td><span class="textgreen">39 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=112">Renew This Domain</a></td>
                 </tr>
@@ -209,8 +209,8 @@ describe('domains.ts', () => {
             id: 111,
             name: 'lead.gq',
             isActive: true,
-            daysLeft: 25,
-            minRenewalDays: 14,
+            daysLeft: 13,
+            minRenewalDays: NaN,
             renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=111'
           },
           {

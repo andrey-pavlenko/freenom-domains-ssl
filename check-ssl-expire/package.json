@@ -5,7 +5,7 @@
   "main": "index.js",
   "scripts": {
     "start": "source ./.env ; ts-node index.ts",
-    "build": "ncc build index.ts --asset-builds --source-map --minify"
+    "build": "rm -rf dist/* ; ncc build index.ts --asset-builds --source-map --minify && cp .env dist/"
   },
   "keywords": [],
   "author": "",

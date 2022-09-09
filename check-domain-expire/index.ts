@@ -22,6 +22,8 @@ const options = {
   freenom_renewals_url: 'https://my.freenom.com/domains.php?a=renewals',
   alarmer_api_key: process.env.ALARMER_API_KEY,
   alarmer_url: 'https://alarmerbot.ru',
+  min_renewal_days: +(process.env.MIN_RENEWAL_DAYS ?? '14'),
+
   check() {
     const errors: string[] = [];
     if (!this.freenom_login) {
@@ -63,7 +65,11 @@ async function task() {
 
   try {
     options.check();
-    const strigifyDomain = ({ name, daysLeft }: RenewableDomain) => ({ name, daysLeft });
+    const strigifyDomain = ({ name, daysLeft, minRenewalDays }: RenewableDomain) => ({
+      name,
+      daysLeft,
+      minRenewalDays: isNaN(minRenewalDays) ? options.min_renewal_days : minRenewalDays
+    });
     const { setCookie } = await login(options.freenom_login ?? '', options.freenom_password ?? '');
     logger.debug('Got login cookie', setCookie);
     const { domains, errors } = await renewable(options.freenom_renewals_url, setCookie);
@@ -71,7 +77,9 @@ async function task() {
     if (errors?.length) {
       logger.error('Got renewable domains has errors', errors);
     }
-    const domainsSoonExpire = (domains ?? []).filter((d) => d.daysLeft <= d.minRenewalDays);
+    const domainsSoonExpire = (domains ?? []).filter(
+      (d) => d.daysLeft <= (isNaN(d.minRenewalDays) ? options.min_renewal_days : d.minRenewalDays)
+    );
     if (domainsSoonExpire.length) {
       logger.info('Domains are expiring soon', domainsSoonExpire.map(strigifyDomain));
     }

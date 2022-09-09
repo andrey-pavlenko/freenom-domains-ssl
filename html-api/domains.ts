@@ -73,19 +73,19 @@ export async function renewable(
           tr.cells
             .item(2)
             ?.textContent?.match(/(\d+)\s*days?/i)
-            ?.at(1) ?? '-1'
+            ?.at(1) ?? 'NaN'
         );
         const minRenewalDays = +(
           tr.cells
             .item(3)
             ?.textContent?.match(/(\d+)\s*days?/i)
-            ?.at(1) ?? '-1'
+            ?.at(1) ?? 'NaN'
         );
         const aHref = tr.cells.item(4)?.querySelector('a')?.href.trim() ?? undefined;
         const [id, renewUrl] = aHref
           ? (() => {
               const url = new URL(aHref, origin);
-              return [+(url.searchParams.get('domain') ?? '-1'), url.toString()];
+              return [+(url.searchParams.get('domain') ?? 'NaN'), url.toString()];
             })()
           : (() => {
               rowErrors.push(
