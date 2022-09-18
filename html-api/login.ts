@@ -1,275 +1,239 @@
-import { stringify as querystringStringify } from 'querystring';
-import axios, { AxiosError } from 'axios';
+import { parse as parseSetCookie } from 'set-cookie-parser';
+import { serialize as serializeCookie } from 'cookie';
+import { parse as parseContentType } from 'content-type';
 import { JSDOM } from 'jsdom';
-import { LOGIN_PAGE, USER_AGENT } from './options';
+import { request, isRedirect, Response } from './request';
+import type { OutgoingHttpHeaders } from 'http';
 
-export enum ErrorTypes {
-  INIT_SESSION_NO_REDIRECT,
-  INIT_SESSION_BAD_LOCATION,
-  INIT_SESSION_NO_COOKIE,
-  PARSE_LOGIN_FORM_FAILED,
-  LOGIN_REQUEST_NO_REDIRECT,
-  LOGIN_REQUEST_NO_COOKIE,
-  LOGIN_REQUEST_BAD_LOCATION,
-  LOGIN_PAGE_INCORRECT_TYPE,
-  LOGIN_PAGE_INCORRECT_FORM,
-  LOGIN_INCORRECT
-}
-
-export class LoginError extends Error {
-  public readonly code: number;
-  constructor(code: number, message?: string) {
-    super(message ?? ErrorTypes[code]);
-    this.code = code;
-  }
-}
-
-const redirectStatuses = new Set([301, 302, 303, 307]);
-
-function parseRedirect(
-  { response, request }: AxiosError,
-  {
-    noRedirectCode,
-    noCookieCode,
-    badLocationCode
-  }: { noRedirectCode: number; noCookieCode: number; badLocationCode: number }
-): {
-  setCookie: string[];
-  location: string;
-} {
-  if (!redirectStatuses.has(response?.status ?? -1)) {
-    throw new LoginError(
-      noRedirectCode,
-      `response status "${response?.status}: ${response?.statusText}" is not redirect status`
+export async function login(
+  url: string,
+  username: string,
+  password: string,
+  headers?: OutgoingHttpHeaders
+) {
+  const form = await getLoginFormHtml(url, headers);
+  if (!form.cookies) {
+    throw new Error(
+      `login failed: undefined "cookie" in the form ${JSON.stringify({
+        ...form,
+        html: `${form.html.slice(0, 20)} ... ${form.html.length} bytes`
+      })}`
     );
   }
-  const setCookie = response?.headers['set-cookie'];
-  if (!setCookie) {
-    throw new LoginError(
-      noCookieCode,
-      response?.headers
-        ? `missing "set-cookie" in response.headers ${JSON.stringify(response.headers)}`
-        : 'missing response.headers'
+  const formData = getLoginData(form.html);
+
+  const postUrl = ((action) => {
+    if (action.match(/^https?:\/\//i)) {
+      return action;
+    } else if (action.startsWith('/')) {
+      const u = new URL(url);
+      u.pathname = action;
+      return u.toString();
+    } else if (action) {
+      return url.replace(/\/$/, '') + '/' + action;
+    } else {
+      throw new Error(
+        `login failed: undefined "action" in the formData ${JSON.stringify(formData)}`
+      );
+    }
+  })(formData.action);
+
+  if (formData.method.toLowerCase() !== 'post') {
+    throw new Error(
+      `login failed: "method" must be "POST" in the formData ${JSON.stringify(formData)}`
     );
   }
-  const protocol = request.protocol;
-  const host: string = request.host;
-  const location = response?.headers['location'];
-  if (!protocol || !host || !location) {
-    throw new LoginError(
-      badLocationCode,
-      `protocol: "${protocol}", host: "${host}", location: "${location}"`
-    );
+
+  const postData = (() => {
+    const inputs = formData.inputs.reduce<Record<string, string>>((a, { name, value }) => {
+      if (name) {
+        a[name] = value;
+      }
+      return a;
+    }, {});
+    const missing = ['token', 'username', 'password']
+      .reduce<string[]>((a, k) => {
+        if (!(k in inputs)) a.push(k);
+        return a;
+      }, [])
+      .map((s) => `"${s}"`)
+      .join(', ');
+
+    if (missing) {
+      throw new Error(
+        `login failed: the required inputs ${missing} are missing in the formData.inputs ${JSON.stringify(
+          formData.inputs
+        )}`
+      );
+    }
+    inputs.username = username;
+    inputs.password = password;
+    return inputs;
+  })();
+
+  if (headers && form.address) {
+    headers.referer = form.address;
   }
-  return {
-    setCookie,
-    location: `${protocol}//${host}/${location.replace(/^\/+/, '')}`
-  };
+
+  return postLoginData(postUrl, { data: postData, cookie: form.cookies, headers });
 }
 
-export async function initLoginSession(url: string): Promise<{
-  loginUrl: string;
-  cookie: string;
-}> {
-  try {
-    await axios.get(url, {
-      headers: {
-        'user-agent': USER_AGENT,
-        accept: 'text/html,application/xhtml+xml',
-        'cache-control': 'no-cache',
-        pragma: 'no-cache'
-      },
-      maxRedirects: 0
+export async function getLoginFormHtml(
+  address: string,
+  headers?: OutgoingHttpHeaders
+): Promise<{ address: string; cookies: string; html: string }> {
+  const sucessCodes = new Set([200, 304]);
+  const url = new URL(address);
+  const maxRequests = 4;
+  let requestNo = 0;
+  let cookies = '';
+  let response: Response;
+
+  while (requestNo < maxRequests) {
+    response = await request({
+      protocol: url.protocol,
+      hostname: url.hostname,
+      port: url.port,
+      path: url.pathname,
+      headers: { ...headers, cookie: cookies }
     });
-    throw new LoginError(ErrorTypes.INIT_SESSION_NO_REDIRECT, 'response without redirect');
-  } catch (e) {
-    if (e instanceof AxiosError) {
-      const { setCookie, location } = parseRedirect(e, {
-        noRedirectCode: ErrorTypes.INIT_SESSION_NO_REDIRECT,
-        noCookieCode: ErrorTypes.INIT_SESSION_NO_COOKIE,
-        badLocationCode: ErrorTypes.INIT_SESSION_BAD_LOCATION
-      });
-      const cookie = setCookie
-        .map((c) => c.split(';')[0]?.trim())
-        .filter((c) => !!c)
+
+    if (response.headers['set-cookie']) {
+      cookies = parseSetCookie(response)
+        .map(({ name, value }) => serializeCookie(name, value))
         .join(';');
-      if (cookie.length === 0) {
-        throw new LoginError(
-          ErrorTypes.INIT_SESSION_NO_COOKIE,
-          `array is empty after extract cookie from ${JSON.stringify(setCookie)}`
+    }
+    if (isRedirect(response.statusCode)) {
+      if (response.headers.location) {
+        url.pathname = response.headers.location;
+      }
+    } else if (sucessCodes.has(response.statusCode ?? NaN)) {
+      if (parseContentType(response).type === 'text/html') {
+        return {
+          address: url.toString(),
+          cookies,
+          html: await response.body
+        };
+      } else {
+        throw new Error(
+          `getLoginFormHtml received a success status code "${
+            response.statusCode
+          }" from "${url.toString()}", but unsupported content-type. Headers ${JSON.stringify(
+            response.headers
+          )}`
         );
       }
-      return {
-        loginUrl: location,
-        cookie
-      };
     } else {
-      throw e;
+      throw new Error(
+        `getLoginFormHtml received a status code "${
+          response.statusCode
+        }" without a redirection from "${url.toString()}". Headers ${JSON.stringify(
+          response.headers
+        )}`
+      );
     }
+
+    requestNo += 1;
   }
+  throw new Error(`getLoginFormHtml maximum requests reached: ${maxRequests}`);
 }
 
-interface LoginFormInput {
-  name: string;
-  type: string;
-  value: string;
-}
-
-export function parseLoginForm(htmlPage: string): {
+export function getLoginData(formHtml: string): {
   action: string;
   method: string;
-  inputs: LoginFormInput[];
+  inputs: {
+    name: string;
+    type: string;
+    value: string;
+  }[];
 } {
-  const dom = new JSDOM(htmlPage);
-  const document = dom.window.document;
-  const form = (() => {
+  const {
+    window: { document }
+  } = new JSDOM(formHtml);
+  const { form, error }: { form?: HTMLFormElement; error?: string } = (() => {
     const password = document.querySelector('input[type=password]');
     if (!password) {
-      throw new LoginError(ErrorTypes.PARSE_LOGIN_FORM_FAILED, 'input[type=password] not found');
+      return { error: 'input[type=password] not found' };
     }
     const form = password.closest('form');
     if (!form) {
-      throw new LoginError(
-        ErrorTypes.PARSE_LOGIN_FORM_FAILED,
-        'parent form of input[type=password] not found'
-      );
+      return { error: 'parent form of input[type=password] not found' };
     }
-    return form;
+    return { form };
   })();
-  const action = form.action;
-  const method = form.method;
-  const inputs: LoginFormInput[] = [];
-  form.querySelectorAll('input').forEach(({ name, type, value }) => {
-    inputs.push({ name, type, value });
-  });
-  return { action, method, inputs };
+  if (error) {
+    throw new Error(`getLoginData failed ${error}`);
+  }
+  if (!form) {
+    throw new Error(`getLoginData form not found`);
+  }
+  const inputs = Array.from(form.querySelectorAll('input')).map(({ name, type, value }) => ({
+    name,
+    type,
+    value
+  }));
+  return {
+    action: form.action,
+    method: form.method,
+    inputs
+  };
 }
 
-export async function loginPostRequest({
-  url,
-  referer,
-  data,
-  cookie
-}: {
-  url: string;
-  referer: string;
+export interface PostLoginDataParams {
   data: Record<string, string>;
   cookie: string;
-}): Promise<{ accountUrl: string; setCookie: string[] }> {
-  try {
-    await axios.post(url, querystringStringify(data), {
+  headers?: OutgoingHttpHeaders;
+}
+
+export async function postLoginData(
+  address: string,
+  { data, cookie, headers }: PostLoginDataParams
+): Promise<{
+  address: string;
+  cookies: string;
+}> {
+  const url = new URL(address);
+
+  const response = await request(
+    {
+      hostname: url.hostname,
+      port: url.port,
+      method: 'post',
+      path: url.pathname,
       headers: {
+        ...headers,
         accept: 'text/html,application/xhtml+xml,application/xml',
         'cache-control': 'no-cache',
         'content-type': 'application/x-www-form-urlencoded',
         pragma: 'no-cache',
-        'user-agent': USER_AGENT,
-        cookie,
-        referer
-      },
-      maxRedirects: 0
-    });
-    throw new LoginError(ErrorTypes.LOGIN_REQUEST_NO_REDIRECT, 'response without redirect');
-  } catch (e) {
-    if (e instanceof AxiosError) {
-      const { setCookie, location } = parseRedirect(e, {
-        noRedirectCode: ErrorTypes.LOGIN_REQUEST_NO_REDIRECT,
-        noCookieCode: ErrorTypes.LOGIN_REQUEST_NO_COOKIE,
-        badLocationCode: ErrorTypes.LOGIN_REQUEST_BAD_LOCATION
-      });
-      if (setCookie.length === 0) {
-        throw new LoginError(
-          ErrorTypes.LOGIN_REQUEST_NO_COOKIE,
-          `setCookie is empty ${JSON.stringify(setCookie)}`
-        );
+        cookie
       }
-      if (!setCookie.some((c) => c.match(/^[A-Z]+user=/i))) {
-        throw new LoginError(
-          ErrorTypes.LOGIN_INCORRECT,
-          `incorrect login, setCookie doesn't contains user ${JSON.stringify(setCookie)}`
-        );
-      }
-      return {
-        accountUrl: location,
-        setCookie
-      };
-    } else {
-      throw e;
-    }
+    },
+    new URLSearchParams(data).toString()
+  );
+  if (!isRedirect(response.statusCode)) {
+    throw new Error(
+      `postLoginData received a status code "${
+        response.statusCode
+      }" without a redirection from "${url.toString()}". Headers ${JSON.stringify(
+        response.headers
+      )}`
+    );
   }
-}
+  if (!response.headers['set-cookie']) {
+    throw new Error(
+      `postLoginData response "${url.toString()}" has no set-cookie header. Headers ${JSON.stringify(
+        response.headers
+      )}`
+    );
+  }
 
-export default async function login(
-  login: string,
-  password: string
-): Promise<{ accountUrl: string; setCookie: string[] }> {
-  const session = await initLoginSession(LOGIN_PAGE);
-  const loginPageResponse = await axios.get(session.loginUrl, {
-    headers: {
-      cookie: session.cookie,
-      'user-agent': USER_AGENT
-    }
-  });
-  if (!loginPageResponse.headers['content-type'].startsWith('text/html')) {
-    throw new LoginError(
-      ErrorTypes.LOGIN_PAGE_INCORRECT_TYPE,
-      `"content-type" is not "text/html", headers: ${JSON.stringify(loginPageResponse.headers)}`
-    );
-  }
-  const loginForm = parseLoginForm(loginPageResponse.data);
-  if (!loginForm.action) {
-    throw new LoginError(
-      ErrorTypes.LOGIN_PAGE_INCORRECT_FORM,
-      `"form.action is invalid, form: ${JSON.stringify(loginForm)}`
-    );
-  }
-  if (!loginForm.action.match(/^https?:\/\//)) {
-    const loginPostUrl = new URL(session.loginUrl);
-    loginPostUrl.pathname = loginForm.action;
-    loginForm.action = loginPostUrl.href;
-  }
-  if (!loginForm.method || loginForm.method !== 'post') {
-    throw new LoginError(
-      ErrorTypes.LOGIN_PAGE_INCORRECT_FORM,
-      `"form.method is invalid, expected "post", form: ${JSON.stringify(loginForm)}`
-    );
-  }
-  if (!loginForm.inputs.find((i) => i.name === 'token')) {
-    throw new LoginError(
-      ErrorTypes.LOGIN_PAGE_INCORRECT_FORM,
-      `"form.inputs[name=token] not found, form: ${JSON.stringify(loginForm)}`
-    );
-  }
-  if (!loginForm.inputs.find((i) => i.name === 'username')) {
-    throw new LoginError(
-      ErrorTypes.LOGIN_PAGE_INCORRECT_FORM,
-      `"form.inputs[name=username] not found, form: ${JSON.stringify(loginForm)}`
-    );
-  }
-  if (!loginForm.inputs.find((i) => i.name === 'password' && i.type === 'password')) {
-    throw new LoginError(
-      ErrorTypes.LOGIN_PAGE_INCORRECT_FORM,
-      `"form.inputs[name=password, type=password] not found, form: ${JSON.stringify(loginForm)}`
-    );
-  }
-  loginForm.inputs = loginForm.inputs.map((i) => {
-    if (i.name === 'username') {
-      i.value = login;
-    } else if (i.name === 'password' && i.type === 'password') {
-      i.value = password;
-    }
-    return i;
-  });
-  const data: Record<string, string> = {};
-  for (const i of loginForm.inputs) {
-    if (i.name) {
-      data[i.name] = i.value;
-    }
-  }
-  return await loginPostRequest({
-    url: loginForm.action,
-    referer: session.loginUrl,
-    data,
-    cookie: session.cookie
-  });
+  const cookies = parseSetCookie(response)
+    .map(({ name, value }) => serializeCookie(name, value))
+    .join(';');
+
+  return {
+    address: response.headers.location ?? '',
+    cookies
+  };
 }

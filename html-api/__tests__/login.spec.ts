@@ -1,166 +1,204 @@
-import axios, { AxiosError, AxiosResponseHeaders } from 'axios';
-import login, {
-  initLoginSession,
-  parseLoginForm,
-  loginPostRequest,
-  LoginError,
-  ErrorTypes
-} from '../login';
-import { LOGIN_PAGE } from '../options';
+import FakeServer from '@freenom/fake-server';
+import { parse as parseCookie, serialize as serializeCookie } from 'cookie';
+import { getLoginFormHtml, getLoginData, postLoginData } from '../login';
+import { login } from '../index';
 
 describe('login.ts', () => {
-  describe('initLoginSession', () => {
-    let axios_get: typeof axios.get;
-    beforeAll(() => (axios_get = axios.get));
-    afterAll(() => (axios.get = axios_get));
+  describe('getLoginform', () => {
+    const server = new FakeServer();
 
-    it('no redirect, should throw error', async () => {
-      axios.get = jest.fn(async () => Promise.resolve({})) as typeof axios.get;
-      try {
-        await initLoginSession('test');
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.INIT_SESSION_NO_REDIRECT);
-      }
-      expect(axios.get).toHaveBeenCalledTimes(1);
+    beforeAll(async () => {
+      await server.start();
     });
 
-    it('no AxiosError, should throw this error', async () => {
-      const e = new Error('Custom error');
-      axios.get = jest.fn(async () => Promise.reject(e)) as typeof axios.get;
-      await expect(initLoginSession('test')).rejects.toThrow(e);
-      expect(axios.get).toHaveBeenCalledTimes(1);
+    afterAll(async () => {
+      await server.stop();
     });
 
-    it('no set-ccokie header, should throw error', async () => {
-      axios.get = jest.fn(() =>
-        Promise.reject(
-          new AxiosError(
-            '',
-            '',
-            {},
-            {},
-            { data: '', status: 302, statusText: 'Found', config: {}, headers: {} }
-          )
-        )
-      );
-      try {
-        await initLoginSession('test');
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.INIT_SESSION_NO_COOKIE);
-      }
-      expect(axios.get).toHaveBeenCalledTimes(1);
-    });
+    it('getLoginform: success', async () => {
+      server.setHandler((req, res) => {
+        if (!req.headers['user-agent']?.match(/^mozilla\/\d/i)) {
+          res.statusCode = 400;
+          res.end();
+          return;
+        }
 
-    it('bad location, should throw error', async () => {
-      axios.get = jest.fn(() =>
-        Promise.reject(
-          new AxiosError(
-            '',
-            '',
-            {},
-            { protocol: 'http', host: 'test' },
-            {
-              data: '',
-              status: 302,
-              statusText: 'Found',
-              config: {},
-              headers: {
-                'set-cookie': ['1']
-              } as AxiosResponseHeaders
-            }
-          )
-        )
-      );
-      try {
-        await initLoginSession('test');
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.INIT_SESSION_BAD_LOCATION);
-      }
-      expect(axios.get).toHaveBeenCalledTimes(1);
-    });
+        if (req.url != '/auth') {
+          res.statusCode = 302;
+          res.setHeader('location', '/auth');
+          res.end();
+          return;
+        }
 
-    it('sucess', async () => {
-      const location = 'test';
-      axios.get = jest.fn(() =>
-        Promise.reject(
-          new AxiosError(
-            '',
-            '',
-            {},
-            { protocol: 'http:', host: 'test.ru' },
-            {
-              data: '',
-              status: 302,
-              statusText: 'Found',
-              config: {},
-              headers: {
-                'set-cookie': [
-                  'WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly',
-                  'WHMCSUser=test; expires=Fri, 25-Aug-2023 15:59:30 GMT; Max-Age=31536000; path=/; httponly'
-                ],
-                location
-              } as unknown as AxiosResponseHeaders
-            }
-          )
-        )
-      );
-      expect(await initLoginSession('test')).toEqual({
-        cookie: 'WHMCSZH5eHTGhfvzP=test;WHMCSUser=test',
-        loginUrl: `http://test.ru/${location}`
+        const cookie = parseCookie(req.headers.cookie || '');
+        if (cookie.InitSession != 'init') {
+          res.statusCode = 302;
+          res.setHeader('location', '/auth');
+          res.setHeader('set-cookie', [
+            serializeCookie('InitSession', 'init', {
+              httpOnly: true,
+              domain: '/'
+            }),
+            serializeCookie('Dummy', 'test', {
+              httpOnly: true,
+              domain: '/'
+            })
+          ]);
+          res.end();
+          return;
+        }
+
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.end(`<!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta http-equiv="X-UA-Compatible" content="IE=edge">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Document</title>
+        </head>
+        <body>
+          <form>
+            <input type="hidden" name="token">
+            <input type="text" name="username">
+            <input type="text" name="password">
+          </form>
+        </body>
+        </html>`);
       });
-      expect(axios.get).toHaveBeenCalledTimes(1);
+
+      const loginHtml = await getLoginFormHtml(server.address, { 'user-agent': 'Mozilla/5.0' });
+      expect(loginHtml.address).toBe(server.address + '/auth');
+      expect(loginHtml.cookies.length).toBeGreaterThan(1);
+      expect(loginHtml.html.startsWith('<!DOCTYPE html>')).toBeTruthy();
+    });
+
+    it('getLoginform: success but no redirect, no cookie', async () => {
+      server.setHandler((req, res) => {
+        res.setHeader('content-type', 'text/html; charset=utf-8');
+        res.end(`<!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8">
+          <meta http-equiv="X-UA-Compatible" content="IE=edge">
+          <meta name="viewport" content="width=device-width, initial-scale=1.0">
+          <title>Document</title>
+        </head>
+        <body>Hello</body>
+        </html>`);
+      });
+
+      const loginHtml = await getLoginFormHtml(server.address, { 'user-agent': 'Mozilla/5.0' });
+      expect(loginHtml.address).toBe(server.address + '/');
+      expect(loginHtml.cookies).toBe('');
+      expect(loginHtml.html.startsWith('<!DOCTYPE html>')).toBeTruthy();
+    });
+
+    it('getLoginform: fail wrong type application/json', async () => {
+      server.setHandler((req, res) => {
+        res.setHeader('content-type', 'application/json; charset=utf-8');
+        res.end(JSON.stringify({ test: 'Test' }));
+      });
+
+      try {
+        await getLoginFormHtml(server.address, { 'user-agent': 'Mozilla/5.0' });
+        expect('Should throw error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/success status code.*application\/json/i);
+      }
+    });
+
+    it('getLoginform: fail wrong statusCode', async () => {
+      server.setHandler((req, res) => {
+        res.statusCode = 400;
+        res.end();
+      });
+
+      try {
+        await getLoginFormHtml(server.address, { 'user-agent': 'Mozilla/5.0' });
+        expect('Should throw error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/status code[\s"]*400\D/i);
+      }
+    });
+
+    it('getLoginform: fail maximum requests', async () => {
+      server.setHandler((req, res) => {
+        res.statusCode = 302;
+        res.end();
+      });
+
+      try {
+        await getLoginFormHtml(server.address, { 'user-agent': 'Mozilla/5.0' });
+        expect('Should throw error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/maximum requests reached/i);
+      }
+    });
+
+    it.skip('getLoginform: real request', async () => {
+      const loginHtml = await getLoginFormHtml('https://my.freenom.com', {
+        'user-agent':
+          'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.101 Safari/537.36'
+      });
+      expect(loginHtml.address).toBe('https://my.freenom.com/clientarea.php');
+      expect(loginHtml.cookies.startsWith('WHMC')).toBeTruthy();
+      expect(loginHtml.html.startsWith('<!DOCTYPE html>')).toBeTruthy();
+
+      console.info({
+        ...loginHtml,
+        ...{ html: `${loginHtml.html.slice(0, 20)} ... ${loginHtml.html.length} bytes` }
+      });
     });
   });
 
-  describe('parseLoginForm', () => {
+  describe('getLoginData', () => {
     it('empty html, should throw error', () => {
       try {
-        parseLoginForm('');
+        getLoginData('');
+        expect('Should thow error').toBe('');
       } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.PARSE_LOGIN_FORM_FAILED);
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/input\[type=password\] not found/i);
       }
     });
 
     it('html without form, should throw error', () => {
       try {
-        parseLoginForm('<p>Hello world</p>');
+        getLoginData('<p>Hello world</p>');
+        expect('Should thow error').toBe('');
       } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.PARSE_LOGIN_FORM_FAILED);
-        expect((e as LoginError).message).toMatch(/input.*not\s+found/i);
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/input\[type=password\] not found/i);
       }
     });
 
     it('html with password and no form, should throw error', () => {
       try {
-        parseLoginForm('<div><p>Hello world</p><input type="password" /></div>');
+        getLoginData('<div><p>Hello world</p><input type="password" /></div>');
+        expect('Should thow error').toBe('');
       } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.PARSE_LOGIN_FORM_FAILED);
-        expect((e as LoginError).message).toMatch(/parent\s+form\s+of\s+input.*not\s+found/i);
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/parent\s+form\s+of\s+input.*not\s+found/i);
       }
     });
 
     it('html with form, success', () => {
-      let parsed = parseLoginForm('<form><input type="password" /></form>');
-      expect(parsed).toStrictEqual({
+      let data = getLoginData('<form><input type="password" /></form>');
+      expect(data).toStrictEqual({
         action: 'about:blank',
         method: 'get',
         inputs: [{ name: '', type: 'password', value: '' }]
       });
-      parsed = parseLoginForm(`<form action="test" method="post">
+      data = getLoginData(`<form action="test" method="post">
       <input type="text" name="login" />
       <input type="password" name="password" />
       <input type="hidden" name="token" value="test"/>
       </form>`);
-      expect(parsed).toStrictEqual({
+      expect(data).toStrictEqual({
         action: 'test',
         method: 'post',
         inputs: [
@@ -170,398 +208,389 @@ describe('login.ts', () => {
         ]
       });
     });
+
+    it('html real form', () => {
+      const data = getLoginData(`<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <!--Start of header.tpl from directory Freenom-->
+  <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0">
+  </meta>
+  <title>Client Area - Freenom</title>
+  <base href="https://my.freenom.com/" />
+</head>
+
+<body class="Client Area ">
+  <div class="wrapper">
+    <section class="login">
+      <div class="row margin padding">
+        <div class="container">
+          <div class="col-md-12 textCenter">
+            <h1 class="splash">Login</h1>
+          </div>
+          <div class="col-md-4 max-width form">
+            <form method="post" action="dologin.php" class="form-stacked">
+              <input type="hidden" name="token" value="c33ee17fef7c0b26fd7a7d52521338bad4cad924" />
+              <div class="form-segment">
+                <strong>Sign in with your e-mail</strong>
+                <div class="control-group">
+                  <div class="controls">
+                    <input class="input-xlarge" placeholder="Email Address" name="username" id="username" type="text" />
+                  </div>
+                </div>
+                <div class="control-group">
+                  <div class="controls">
+                    <input name="password" placeholder="Password" id="password" type="password" />
+                  </div>
+                </div>
+                <input type="submit" class="largeBtn primaryColor pullRight" value="Login" />
+                <div class="rememberMe">
+                  <input type="checkbox" id="rememberMe" name="rememberme" /> <label for="rememberMe">Remember
+                    Me</label>
+                </div>
+
+                <span class="passwordReset"><a href="pwreset.php"> Request a Password Reset</a></span>
+              </div>
+              <div class="form-segment fb">
+                <div class="socialLogin">
+                  <strong>Use social sign in</strong>
+                  <div class="g-signin2" data-onsuccess="onSignIn" data-prompt="select_account"></div>
+                  <div class="fb-login-button" data-width="320" data-max-rows="1" data-size="large"
+                    data-button-type="continue_with" data-show-faces="false" data-auto-logout-link="false"
+                    onlogin="checkLoginState();" data-use-continue-as="false"></div>
+                </div>
+              </div>
+            </form>
+            <form id="gl" action="/sociallogin.php" method="POST">
+              <input type="hidden" name="token" value="c33ee17fef7c0b26fd7a7d52521338bad4cad924" />
+              <input type="hidden" name="token_id" id="token_id" />
+            </form>
+            <form id="fl" action="/sociallogin.php" method="POST">
+              <input type="hidden" name="token" value="c33ee17fef7c0b26fd7a7d52521338bad4cad924" />
+              <input type="hidden" name="access_token" id="access_token" />
+            </form>
+          </div>
+        </div>
+      </div>
+    </section>
+  </div>
+</body>
+
+</html>`);
+      expect(data).toStrictEqual({
+        action: 'https://my.freenom.com/dologin.php',
+        method: 'post',
+        inputs: [
+          {
+            name: 'token',
+            type: 'hidden',
+            value: 'c33ee17fef7c0b26fd7a7d52521338bad4cad924'
+          },
+          { name: 'username', type: 'text', value: '' },
+          { name: 'password', type: 'password', value: '' },
+          { name: '', type: 'submit', value: 'Login' },
+          { name: 'rememberme', type: 'checkbox', value: 'on' }
+        ]
+      });
+    });
   });
 
-  describe('loginPostRequest', () => {
-    let axios_post: typeof axios.post;
-    beforeAll(() => (axios_post = axios.post));
-    afterAll(() => (axios.post = axios_post));
+  describe('postLoginData', () => {
+    const server = new FakeServer();
 
-    it('no redirect, should throw error', async () => {
-      axios.post = jest.fn(async () => Promise.resolve({})) as typeof axios.get;
-      try {
-        await loginPostRequest({ url: 'test', referer: 'test', cookie: 'test', data: {} });
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.LOGIN_REQUEST_NO_REDIRECT);
-      }
-      expect(axios.post).toHaveBeenCalledTimes(1);
+    beforeAll(async () => {
+      await server.start();
     });
 
-    it('no AxiosError, should throw this error', async () => {
-      const e = new Error('Custom error');
-      axios.post = jest.fn(async () => Promise.reject(e)) as typeof axios.get;
-      await expect(
-        loginPostRequest({ url: 'test', referer: 'test', cookie: 'test', data: {} })
-      ).rejects.toThrow(e);
-      expect(axios.post).toHaveBeenCalledTimes(1);
+    afterAll(async () => {
+      await server.stop();
     });
 
-    it('no set-ccokie header, should throw error', async () => {
-      axios.post = jest.fn(() =>
-        Promise.reject(
-          new AxiosError(
-            '',
-            '',
-            {},
-            {},
-            { data: '', status: 302, statusText: 'Found', config: {}, headers: {} }
-          )
-        )
-      );
-      try {
-        await loginPostRequest({ url: 'test', referer: 'test', cookie: 'test', data: {} });
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.LOGIN_REQUEST_NO_COOKIE);
-      }
-      expect(axios.post).toHaveBeenCalledTimes(1);
-    });
+    it('postLoginData: success', async () => {
+      server.setHandler(async (req, res) => {
+        if (!req.headers['user-agent']?.match(/^mozilla\/\d/i)) {
+          res.statusCode = 400;
+          res.end();
+          return;
+        }
 
-    it('bad location, should throw error', async () => {
-      axios.post = jest.fn(() =>
-        Promise.reject(
-          new AxiosError(
-            '',
-            '',
-            {},
-            { protocol: 'http', host: 'test' },
-            {
-              data: '',
-              status: 302,
-              statusText: 'Found',
-              config: {},
-              headers: {
-                'set-cookie': ['1']
-              } as AxiosResponseHeaders
-            }
-          )
-        )
-      );
-      try {
-        await loginPostRequest({ url: 'test', referer: 'test', cookie: 'test', data: {} });
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.LOGIN_REQUEST_BAD_LOCATION);
-      }
-      expect(axios.post).toHaveBeenCalledTimes(1);
-    });
+        if (req.method !== 'POST') {
+          res.statusCode = 400;
+          res.end();
+          return;
+        }
 
-    it('sucess', async () => {
-      const location = 'test';
-      axios.post = jest.fn(() =>
-        Promise.reject(
-          new AxiosError(
-            '',
-            '',
-            {},
-            { protocol: 'http:', host: 'test.ru' },
-            {
-              data: '',
-              status: 302,
-              statusText: 'Found',
-              config: {},
-              headers: {
-                'set-cookie': [
-                  'WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly',
-                  'WHMCSUser=test; expires=Fri, 25-Aug-2023 15:59:30 GMT; Max-Age=31536000; path=/; httponly'
-                ],
-                location
-              } as unknown as AxiosResponseHeaders
-            }
-          )
-        )
-      );
-      expect(
-        await loginPostRequest({ url: 'test', referer: 'test', cookie: 'test', data: {} })
-      ).toEqual({
-        setCookie: [
-          'WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly',
-          'WHMCSUser=test; expires=Fri, 25-Aug-2023 15:59:30 GMT; Max-Age=31536000; path=/; httponly'
-        ],
-        accountUrl: `http://test.ru/${location}`
+        if (req.headers['content-type'] !== 'application/x-www-form-urlencoded') {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+
+        if (!req.headers.cookie || req.headers.cookie !== 'WMZ=wmz') {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+
+        const { login, password } = Object.fromEntries(new URLSearchParams(await server.body(req)));
+        if (password !== 'password') {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+
+        res.statusCode = 302;
+        res.setHeader('set-cookie', [
+          serializeCookie('Session', 'Test', {
+            httpOnly: true,
+            domain: '/'
+          }),
+          serializeCookie('User', login, {
+            httpOnly: true,
+            domain: '/'
+          })
+        ]);
+        res.setHeader('location', server.address + '/account');
+        res.end();
       });
-      expect(axios.post).toHaveBeenCalledTimes(1);
+
+      const res = await postLoginData(server.address, {
+        cookie: 'WMZ=wmz',
+        data: { login: 'test', password: 'password' },
+        headers: { 'user-agent': 'Mozilla/5.0' }
+      });
+      expect(res.address).toBe(server.address + '/account');
+      expect(res.cookies).toBe('Session=Test;User=test');
+    });
+
+    it('postLoginData: no redirect, failed', async () => {
+      server.setHandler(async (req, res) => {
+        res.write('Hello');
+        res.end();
+      });
+
+      try {
+        await postLoginData(server.address, {
+          cookie: '',
+          data: { login: 'test', password: 'password' },
+          headers: { 'user-agent': 'Mozilla/5.0' }
+        });
+        expect('Should thow error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/received a status code.*without a redirection/i);
+      }
+    });
+
+    it('postLoginData: no set-cookie, failed', async () => {
+      server.setHandler(async (req, res) => {
+        res.statusCode = 302;
+        res.setHeader('location', '/text');
+        res.end();
+      });
+
+      try {
+        await postLoginData(server.address, {
+          cookie: '',
+          data: { login: 'test', password: 'password' },
+          headers: { 'user-agent': 'Mozilla/5.0' }
+        });
+        expect('Should thow error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/has no set-cookie header/i);
+      }
     });
   });
 
   describe('login', () => {
-    let axios_get: typeof axios.get;
-    let axios_post: typeof axios.post;
-    beforeAll(() => {
-      axios_get = axios.get;
-      axios_post = axios.post;
-    });
-    afterAll(() => {
-      axios.get = axios_get;
-      axios.post = axios_post;
-    });
+    let clearFormCookie = false;
+    let formMethod = 'post';
+    let formInputs = `<input type="hidden" name="token" value="c33ee17fef7c0b26fd7a7d52521338bad4cad924" />
+    <input class="input-xlarge" placeholder="Email Address" name="username" id="username" type="text" />
+    <input name="password" placeholder="Password" id="password" type="password" />
+    <input type="checkbox" id="rememberMe" name="rememberme" />
+    <input type="submit" class="largeBtn primaryColor pullRight" value="Login" />
+`;
 
-    it('incorrect login, should throw error', async () => {
-      const url = new URL(LOGIN_PAGE);
-      const axiosMock = {
-        initLoginSession: jest.fn(() => {
-          axios.get = axiosMock.getLoginPage;
-          return Promise.reject(
-            new AxiosError(
-              '',
-              '',
-              {},
-              { protocol: url.protocol, host: url.host },
-              {
-                data: '',
-                status: 302,
-                statusText: 'Found',
-                config: {},
-                headers: {
-                  'set-cookie': ['WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly'],
-                  location: 'test_page'
-                } as unknown as AxiosResponseHeaders
-              }
-            )
-          );
-        }) as typeof axios.get,
-        getLoginPage: jest.fn(() => {
-          return Promise.resolve({
-            data: `<div class="col-md-4 max-width form">
-						<form method="post" action="dologin.php" class="form-stacked">
-							<input type="hidden" name="token" value="be086a3fdfa6db1b2a98dcd9be87bfb20dc58b75" />
-							<div class="form-segment">
-								<strong>Sign in with your e-mail</strong>
-								<div class="control-group">
-									<div class="controls">
-										<input class="input-xlarge" placeholder="Email Address" name="username" id="username" type="text" />
-									</div>
-								</div>
-								<div class="control-group">
-									<div class="controls">
-										<input name="password" placeholder="Password" id="password" type="password" />
-									</div>
-								</div>
-								<input type="submit" class="largeBtn primaryColor pullRight" value="Login" />
-								<div class="rememberMe">
-									<input type="checkbox" id="rememberMe" name="rememberme" /> <label for="rememberMe">Remember
-										Me</label>
-								</div>
-								<span class="passwordReset"><a href="pwreset.php"> Request a Password Reset</a></span>
-							</div>
-							<div class="form-segment fb">
-								<div class="socialLogin">
-									<strong>Use social sign in</strong>
-									<!-- google -->
-									<div class="g-signin2" data-onsuccess="onSignIn" data-prompt="select_account"></div>
-
-									<!-- facebook -->
-									<div class="fb-login-button" data-width="320" data-max-rows="1" data-size="large"
-										data-button-type="continue_with" data-show-faces="false" data-auto-logout-link="false"
-										onlogin="checkLoginState();" data-use-continue-as="false"></div>
-								</div>
-							</div>
-						</form>
-						<form id="gl" action="/sociallogin.php" method="POST">
-							<input type="hidden" name="token" value="be086a3fdfa6db1b2a98dcd9be87bfb20dc58b75" />
-							<input type="hidden" name="token_id" id="token_id" />
-						</form>
-						<form id="fl" action="/sociallogin.php" method="POST">
-							<input type="hidden" name="token" value="be086a3fdfa6db1b2a98dcd9be87bfb20dc58b75" />
-							<input type="hidden" name="access_token" id="access_token" />
-						</form>
-					</div>`,
-            status: 200,
-            config: {},
-            headers: {
-              'content-type': 'text/html; charset=utf-8'
-            } as unknown as AxiosResponseHeaders
-          });
-        }) as typeof axios.get,
-        loginPostRequest: jest.fn(() =>
-          Promise.reject(
-            new AxiosError(
-              '',
-              '',
-              {},
-              { protocol: url.protocol, host: url.host },
-              {
-                data: '',
-                status: 302,
-                statusText: 'Found',
-                config: {},
-                headers: {
-                  'set-cookie': ['WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly'],
-                  location: 'account'
-                } as unknown as AxiosResponseHeaders
-              }
-            )
-          )
-        ) as typeof axios.post
-      };
-      axios.get = axiosMock.initLoginSession;
-      axios.post = axiosMock.loginPostRequest;
-      try {
-        await login('test', 'test');
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(LoginError);
-        expect((e as LoginError).code).toBe(ErrorTypes.LOGIN_INCORRECT);
+    const server = new FakeServer();
+    server.setHandler(async (req, res) => {
+      if (!req.headers['user-agent']?.match(/^mozilla\/\d/i)) {
+        res.statusCode = 403;
+        res.end();
+        return;
       }
-      expect(axiosMock.initLoginSession).toHaveBeenCalledTimes(1);
-      expect((axiosMock.initLoginSession as jest.Mock).mock.lastCall[0]).toBe(LOGIN_PAGE);
-      expect(axiosMock.getLoginPage).toBeCalledTimes(1);
-      expect((axiosMock.getLoginPage as jest.Mock).mock.lastCall[0]).toBe(
-        'https://my.freenom.com/test_page'
-      );
-      expect((axiosMock.getLoginPage as jest.Mock).mock.lastCall[1]).toMatchObject({
-        headers: {
-          cookie: 'WHMCSZH5eHTGhfvzP=test'
+
+      if (req.method === 'GET') {
+        if (req.url != '/auth') {
+          res.statusCode = 302;
+          res.setHeader('location', '/auth');
+          res.end();
+          return;
         }
-      });
-      expect(axiosMock.loginPostRequest).toBeCalledTimes(1);
-      expect((axiosMock.loginPostRequest as jest.Mock).mock.lastCall[0]).toBe(
-        'https://my.freenom.com/dologin.php'
-      );
-      expect((axiosMock.loginPostRequest as jest.Mock).mock.lastCall[2]).toMatchObject({
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          cookie: 'WHMCSZH5eHTGhfvzP=test'
+
+        const cookie = parseCookie(req.headers.cookie || '');
+        if (cookie.Session != 'init') {
+          res.statusCode = 302;
+          res.setHeader('location', '/auth');
+          res.setHeader('set-cookie', [
+            serializeCookie('Session', 'init', {
+              httpOnly: true,
+              domain: '/'
+            })
+          ]);
+          res.end();
+          return;
         }
-      });
+
+        if (clearFormCookie) {
+          res.setHeader('set-cookie', '');
+        } else {
+          res.setHeader('set-cookie', [
+            serializeCookie('Session', 'init', {
+              httpOnly: true,
+              domain: '/'
+            })
+          ]);
+        }
+        res.setHeader('content-type', 'text/html');
+        res.write(`<!DOCTYPE html>
+<html lang="en">
+<head>
+  <!--Start of header.tpl from directory Freenom-->
+  <meta http-equiv="content-type" content="text/html; charset=utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1.0"></meta>
+  <title>Auth</title>
+  <base href="${server.address}/}" />
+</head>
+
+<body>
+  <form method="${formMethod}" action="login">
+    ${formInputs}
+  </form>
+</body>
+
+</html>`);
+      }
+
+      if (req.method === 'POST') {
+        if (req.headers['content-type'] !== 'application/x-www-form-urlencoded') {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+
+        if (!req.headers.cookie || req.headers.cookie !== 'Session=init') {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+
+        const { username, password } = Object.fromEntries(
+          new URLSearchParams(await server.body(req))
+        );
+        if (password !== 'password') {
+          res.statusCode = 403;
+          res.end();
+          return;
+        }
+
+        res.statusCode = 302;
+        res.setHeader('set-cookie', [
+          serializeCookie('Session', 'Test', {
+            httpOnly: true,
+            domain: '/'
+          }),
+          serializeCookie('User', username, {
+            httpOnly: true,
+            domain: '/'
+          })
+        ]);
+        res.setHeader('location', server.address + '/account');
+        res.end();
+      }
+
+      res.statusCode = 400;
+      res.end();
     });
 
-    it('success', async () => {
-      const url = new URL(LOGIN_PAGE);
-      const axiosMock = {
-        initLoginSession: jest.fn(() => {
-          axios.get = axiosMock.getLoginPage;
-          return Promise.reject(
-            new AxiosError(
-              '',
-              '',
-              {},
-              { protocol: url.protocol, host: url.host },
-              {
-                data: '',
-                status: 302,
-                statusText: 'Found',
-                config: {},
-                headers: {
-                  'set-cookie': ['WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly'],
-                  location: 'test_page'
-                } as unknown as AxiosResponseHeaders
-              }
-            )
-          );
-        }) as typeof axios.get,
-        getLoginPage: jest.fn(() => {
-          return Promise.resolve({
-            data: `<div class="col-md-4 max-width form">
-						<form method="post" action="dologin.php" class="form-stacked">
-							<input type="hidden" name="token" value="be086a3fdfa6db1b2a98dcd9be87bfb20dc58b75" />
-							<div class="form-segment">
-								<strong>Sign in with your e-mail</strong>
-								<div class="control-group">
-									<div class="controls">
-										<input class="input-xlarge" placeholder="Email Address" name="username" id="username" type="text" />
-									</div>
-								</div>
-								<div class="control-group">
-									<div class="controls">
-										<input name="password" placeholder="Password" id="password" type="password" />
-									</div>
-								</div>
-								<input type="submit" class="largeBtn primaryColor pullRight" value="Login" />
-								<div class="rememberMe">
-									<input type="checkbox" id="rememberMe" name="rememberme" /> <label for="rememberMe">Remember
-										Me</label>
-								</div>
-								<span class="passwordReset"><a href="pwreset.php"> Request a Password Reset</a></span>
-							</div>
-							<div class="form-segment fb">
-								<div class="socialLogin">
-									<strong>Use social sign in</strong>
-									<!-- google -->
-									<div class="g-signin2" data-onsuccess="onSignIn" data-prompt="select_account"></div>
+    beforeAll(async () => {
+      await server.start();
+    });
 
-									<!-- facebook -->
-									<div class="fb-login-button" data-width="320" data-max-rows="1" data-size="large"
-										data-button-type="continue_with" data-show-faces="false" data-auto-logout-link="false"
-										onlogin="checkLoginState();" data-use-continue-as="false"></div>
-								</div>
-							</div>
-						</form>
-						<form id="gl" action="/sociallogin.php" method="POST">
-							<input type="hidden" name="token" value="be086a3fdfa6db1b2a98dcd9be87bfb20dc58b75" />
-							<input type="hidden" name="token_id" id="token_id" />
-						</form>
-						<form id="fl" action="/sociallogin.php" method="POST">
-							<input type="hidden" name="token" value="be086a3fdfa6db1b2a98dcd9be87bfb20dc58b75" />
-							<input type="hidden" name="access_token" id="access_token" />
-						</form>
-					</div>`,
-            status: 200,
-            config: {},
-            headers: {
-              'content-type': 'text/html; charset=utf-8'
-            } as unknown as AxiosResponseHeaders
-          });
-        }) as typeof axios.get,
-        loginPostRequest: jest.fn(() =>
-          Promise.reject(
-            new AxiosError(
-              '',
-              '',
-              {},
-              { protocol: url.protocol, host: url.host },
-              {
-                data: '',
-                status: 302,
-                statusText: 'Found',
-                config: {},
-                headers: {
-                  'set-cookie': [
-                    'WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly',
-                    'WHMCSUser=test; expires=Fri, 25-Aug-2023 15:59:30 GMT; Max-Age=31536000; path=/; httponly'
-                  ],
-                  location: 'account'
-                } as unknown as AxiosResponseHeaders
-              }
-            )
-          )
-        ) as typeof axios.post
-      };
-      axios.get = axiosMock.initLoginSession;
-      axios.post = axiosMock.loginPostRequest;
-      const result = await login('test', 'test');
-      expect(axiosMock.initLoginSession).toHaveBeenCalledTimes(1);
-      expect((axiosMock.initLoginSession as jest.Mock).mock.lastCall[0]).toBe(LOGIN_PAGE);
-      expect(axiosMock.getLoginPage).toBeCalledTimes(1);
-      expect((axiosMock.getLoginPage as jest.Mock).mock.lastCall[0]).toBe(
-        'https://my.freenom.com/test_page'
-      );
-      expect((axiosMock.getLoginPage as jest.Mock).mock.lastCall[1]).toMatchObject({
-        headers: {
-          cookie: 'WHMCSZH5eHTGhfvzP=test'
+    afterAll(async () => {
+      await server.stop();
+    });
+
+    it('login: success', async () => {
+      const res = await login(server.address, 'test', 'password', { 'user-agent': 'Mozilla/5.0' });
+      expect(res.address).toBe(server.address + '/account');
+      expect(res.cookies).toBe('Session=Test;User=test');
+    });
+
+    it('login: fail no cookie', async () => {
+      clearFormCookie = true;
+      try {
+        await login(server.address, 'test', 'password', { 'user-agent': 'Mozilla/5.0' });
+        expect('Should thow error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/login failed: undefined "cookie" in the form/);
+      }
+    });
+
+    it('login: fail wrong method', async () => {
+      clearFormCookie = false;
+      formMethod = 'get';
+      try {
+        await login(server.address, 'test', 'password', { 'user-agent': 'Mozilla/5.0' });
+        expect('Should thow error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/login failed: "method" must be "POST"/);
+      }
+    });
+
+    it('login: fail missing inputs', async () => {
+      formMethod = 'post';
+      const _formInputs = formInputs;
+      formInputs = `<input class="input-xlarge" placeholder="Email Address" type="text" />
+    <input type="password" />
+    <input type="submit" class="largeBtn primaryColor pullRight" value="Login" />`;
+
+      try {
+        await login(server.address, 'test', 'password', { 'user-agent': 'Mozilla/5.0' });
+        expect('Should thow error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(
+          /login failed: the required inputs "token", "username", "password" are missing/
+        );
+      }
+      formInputs = _formInputs;
+    });
+
+    it.skip('login: real', async () => {
+      if (!(process.env.FREENOM_LOGIN && process.env.FREENOM_PASSWORD && process.env.FREENOM_URL)) {
+        console.info(
+          'Missing some env variables: "FREENOM_LOGIN", "FREENOM_PASSWORD", "FREENOM_URL"'
+        );
+        return;
+      }
+      const res = await login(
+        process.env.FREENOM_URL,
+        process.env.FREENOM_LOGIN,
+        process.env.FREENOM_PASSWORD,
+        {
+          'user-agent':
+            'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/104.0.5112.101 Safari/537.36'
         }
-      });
-      expect(axiosMock.loginPostRequest).toBeCalledTimes(1);
-      expect((axiosMock.loginPostRequest as jest.Mock).mock.lastCall[0]).toBe(
-        'https://my.freenom.com/dologin.php'
       );
-      expect((axiosMock.loginPostRequest as jest.Mock).mock.lastCall[2]).toMatchObject({
-        headers: {
-          'content-type': 'application/x-www-form-urlencoded',
-          cookie: 'WHMCSZH5eHTGhfvzP=test'
-        }
-      });
-      expect(result).toStrictEqual({
-        accountUrl: 'https://my.freenom.com/account',
-        setCookie: [
-          'WHMCSZH5eHTGhfvzP=test; path=/; HttpOnly',
-          'WHMCSUser=test; expires=Fri, 25-Aug-2023 15:59:30 GMT; Max-Age=31536000; path=/; httponly'
-        ]
-      });
+      // console.info(res);
+      expect(res.address).toBe('/clientarea.php');
+      expect(res.cookies).toMatch(/WHMCS[\w]+=[\w]+;WHMCSUser=[\w]+/);
     });
   });
 });

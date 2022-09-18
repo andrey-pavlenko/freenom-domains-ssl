@@ -1,4 +1,5 @@
-export { default as login } from './login';
+export { login } from './login';
 export { renewable } from './domains';
-export type { LoginError, ErrorTypes } from './login';
-export type { RenewableDomain } from './domains';
+export { request, isRedirect } from './request';
+export type { Response } from './request';
+export type { RenewableDomain, DomainInfo, DomainError } from './domains';

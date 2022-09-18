@@ -1,4 +1,5 @@
 packages:
   - 'html-api'
-  - 'check-domain-expire'
-  - 'check-ssl-expire'
+  - 'fake-server'
+  - 'notifier'
+  - 'logger'

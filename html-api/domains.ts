@@ -1,126 +1,121 @@
-import axios from 'axios';
+import { parse as parseContentType } from 'content-type';
 import { JSDOM } from 'jsdom';
-import { USER_AGENT } from './options';
+import { request } from './request';
+import type { OutgoingHttpHeaders } from 'http';
 
-export async function getContent(url: string, setCookie: string[]): Promise<string> {
-  const cookie = setCookie
-    .map((c) => c.split(';')[0])
-    .filter((s) => !!s)
-    .map((s) => s.trim())
-    .join(';');
-
-  const response = await axios.get(url, {
-    maxRedirects: 0,
-    headers: {
-      cookie,
-      'user-agent': USER_AGENT
-    }
-  });
-
-  return response.data;
-}
-
-export interface RenewableDomain {
+export interface DomainInfo {
   id: number;
   name: string;
-  isActive: boolean;
+  status: string;
   daysLeft: number;
-  minRenewalDays: number;
   renewUrl: string;
 }
 
+export interface DomainError {
+  error: string;
+}
+
+export type RenewableDomain = DomainInfo | DomainError;
+
 export async function renewable(
-  url: string,
-  setCookie: string[]
-): Promise<{ domains?: RenewableDomain[]; errors?: string[] }> {
-  const dom = new JSDOM(await getContent(url, setCookie));
-  const table = dom.window.document.evaluate(
-    `//h1[contains(text(),'Domain Renewals')]/parent::section/following-sibling::section//table`,
-    dom.window.document,
-    null,
-    dom.window.XPathResult.FIRST_ORDERED_NODE_TYPE
-  ).singleNodeValue;
-  if (table instanceof dom.window.HTMLTableElement) {
-    const { origin } = new URL(url);
-    const tableRows = Array.from(table.querySelectorAll('tbody'))
-      .map((tbody) => Array.from(tbody.querySelectorAll('tr')))
-      .flat();
-    const domains: RenewableDomain[] = [];
-    const errors: string[] = [];
-    for (const [index, tr] of tableRows.entries()) {
-      if (tr.cells.length < 5) {
-        errors.push(
-          `row #${index} has ${
-            tr.cells.length
-          } cells, expected 5. Row content: ${tr.innerHTML.trim()}`
-        );
-      } else {
-        const rowErrors: string[] = [];
-        const name = tr.cells.item(0)?.textContent?.trim() ?? '';
-        if (!name) {
-          rowErrors.push(`"name" property not detected in cell: "${tr.cells.item(0)?.innerHTML}"`);
-        }
-        const isActiveText = tr.cells.item(1)?.textContent?.trim();
-        const isActive = isActiveText
-          ? isActiveText.toLowerCase() === 'active'
-          : (() => {
-              rowErrors.push(
-                `"isActive" property not detected in cell: "${tr.cells.item(1)?.innerHTML.trim()}"`
-              );
-              return false;
-            })();
-        const daysLeft = +(
-          tr.cells
-            .item(2)
-            ?.textContent?.match(/(\d+)\s*days?/i)
-            ?.at(1) ?? 'NaN'
-        );
-        const minRenewalDays = +(
-          tr.cells
-            .item(3)
-            ?.textContent?.match(/(\d+)\s*days?/i)
-            ?.at(1) ?? 'NaN'
-        );
-        const aHref = tr.cells.item(4)?.querySelector('a')?.href.trim() ?? undefined;
-        const [id, renewUrl] = aHref
-          ? (() => {
-              const url = new URL(aHref, origin);
-              return [+(url.searchParams.get('domain') ?? 'NaN'), url.toString()];
-            })()
-          : (() => {
-              rowErrors.push(
-                `"id" and "renewUrl" properties not detected in cell: "${tr.cells
-                  .item(4)
-                  ?.innerHTML.trim()}"`
-              );
-              return [NaN, ''];
-            })();
-        if (rowErrors.length) {
-          errors.push(`row #${index} has errors: ${rowErrors.join('; ')}`);
-        } else {
-          domains.push({
-            id,
-            name,
-            isActive,
-            daysLeft,
-            minRenewalDays,
-            renewUrl
-          });
+  address: string,
+  headers?: OutgoingHttpHeaders
+): Promise<RenewableDomain[]> {
+  const url = new URL(address);
+
+  function parseDomainRow(tr: HTMLTableRowElement, i: number): RenewableDomain {
+    const name = tr.cells.item(0)?.textContent?.trim();
+    const status = tr.cells.item(1)?.textContent?.trim();
+    const daysLeft = ((text) => {
+      if (text) {
+        const match = text.match(/(\d+)\s*days?/i)?.at(1);
+        if (match != null) {
+          return +match;
         }
       }
+    })(tr.cells.item(2)?.textContent);
+    const [id, renewUrl] = ((href) => {
+      if (href != null) {
+        const rUrl = new URL(href, url.origin);
+        const id = rUrl.searchParams.get('domain');
+        if (id) {
+          return [+id, rUrl.toString()];
+        }
+      }
+      return [undefined, undefined];
+    })(tr.cells.item(4)?.querySelector('a')?.href?.trim());
+
+    const error = [
+      !name ? `"name" property not detected in cell 0, row ${i}` : '',
+      status == null
+        ? '"status" property not detected in cell 2' +
+          (name ? ` (domain, "${name}")` : '') +
+          `, row ${i}`
+        : '',
+      daysLeft == null
+        ? '"daysLeft" property not detected in cell 3' +
+          (name ? ` (domain, "${name}")` : '') +
+          `, row ${i}`
+        : '',
+      id == null
+        ? '"id" property not detected in cell 4' +
+          (name ? ` (domain, "${name}")` : '') +
+          `, row ${i}`
+        : ''
+    ]
+      .filter((s) => !!s)
+      .join(', ');
+
+    if (error) {
+      return { error };
     }
-
-    const result: { domains?: RenewableDomain[]; errors?: string[] } = {};
-
-    if (domains.length) {
-      result.domains = domains;
-    }
-
-    if (errors.length) {
-      result.errors = errors;
-    }
-
-    return result;
+    return {
+      id: id as number,
+      name: name as string,
+      status: status as string,
+      daysLeft: daysLeft as number,
+      renewUrl: renewUrl as string
+    };
   }
-  throw new Error('table of domains not found');
+
+  const response = await request({
+    hostname: url.hostname,
+    port: url.port,
+    method: 'GET',
+    path: url.pathname + url.search,
+    headers: {
+      ...headers,
+      accept: 'text/html,application/xhtml+xml',
+      'cache-control': 'no-cache',
+      pragma: 'no-cache'
+    }
+  });
+  if (!(response.statusCode === 200 || response.statusCode === 304)) {
+    throw new Error(`renewable request "${address} failed, statusCode is "${response.statusCode}"`);
+  }
+  if (parseContentType(response).type !== 'text/html') {
+    throw new Error(
+      `renewable request received a success status code "${
+        response.statusCode
+      }" from "${url.toString()}", but unsupported content-type. Headers ${JSON.stringify(
+        response.headers
+      )}`
+    );
+  }
+
+  const { window } = new JSDOM(await response.body);
+  const table = window.document.evaluate(
+    `//th[contains(text(),'Days Until Expiry')]/ancestor::table`,
+    window.document,
+    null,
+    window.XPathResult.FIRST_ORDERED_NODE_TYPE
+  ).singleNodeValue;
+  if (!(table instanceof window.HTMLTableElement)) {
+    throw new Error('renewable failed: table of domains not found');
+  }
+
+  return Array.from(table.querySelectorAll('tbody'))
+    .map((b) => Array.from(b.querySelectorAll('tr')))
+    .flat()
+    .map(parseDomainRow);
 }

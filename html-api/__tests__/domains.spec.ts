@@ -1,31 +1,72 @@
-import axios from 'axios';
-import { renewable } from '../domains';
+import FakeServer from '@freenom/fake-server';
+import { parse as parseCookie } from 'cookie';
+import { renewable } from '../index';
 
 describe('domains.ts', () => {
   describe('renewable', () => {
-    let axios_get: typeof axios.get;
-    beforeAll(() => (axios_get = axios.get));
-    afterAll(() => (axios.get = axios_get));
+    interface DomainRowParams {
+      domain: string;
+      status: string;
+      days?: number;
+      id?: number;
+    }
 
-    it('empty page, should throw error', async () => {
-      axios.get = jest.fn(async () => Promise.resolve({})) as typeof axios.get;
-      try {
-        await renewable('https://my.freenom.com/domains.php?a=renewals', [
-          'test=test',
-          'test1=test1'
-        ]);
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(Error);
-        expect((e as Error).message).toMatch(/table.*not found/i);
+    const domainRow = ({ domain, status, days, id }: DomainRowParams) =>
+      `<tr><td>${domain}</td><td>${status}</td><td><span class="text${
+        days && days <= 14 ? 'green' : 'red'
+      }">${days} Days</span></td><td><span class="text${days && days <= 14 ? 'green' : 'red'}">${
+        days && days <= 14 ? 'Renewable' : 'Minimum Advance Renewal is 14 Days for Free Domains'
+      }</span></td><td><a class="smallBtn greyBtn pullRight" ${
+        id ? `href="domains.php?a=renewdomain&domain=${id}` : ''
+      }">Renew This Domain</a></td></tr>`;
+
+    let tableHeader =
+      '<tr><th>Domain</th><th>Status</th><th>Days Until Expiry</th><th></th><th></th></tr>';
+
+    let domainforRows: DomainRowParams[] = [
+      {
+        domain: 'test1.tk',
+        status: 'Active',
+        days: 14,
+        id: 111
+      },
+      {
+        domain: 'test2.tk',
+        status: 'Active',
+        days: 28,
+        id: 112
       }
-      expect(axios.get).toHaveBeenCalledTimes(1);
-    });
+    ];
 
-    it('no table, should throw error', async () => {
-      axios.get = jest.fn(async () =>
-        Promise.resolve({
-          data: `<!DOCTYPE html>
+    const server = new FakeServer((req, res) => {
+      if (
+        !req.headers['user-agent']?.match(/^mozilla\/\d/i) ||
+        req.method !== 'GET' ||
+        !req.url ||
+        !req.headers.cookie
+      ) {
+        res.statusCode = 400;
+        res.end();
+        return;
+      }
+
+      if (req.url !== '/domains?a=renewals') {
+        res.setHeader('content-type', 'text/plain; charset=utf-8');
+        res.write('Unknown page');
+        res.end();
+        return;
+      }
+
+      const cookies = parseCookie(req.headers.cookie);
+      if (cookies['WHMCSZ'] !== 'session' || cookies['WHMCSUser'] !== 'test') {
+        res.statusCode = 302;
+        res.setHeader('location', server.address);
+        res.end();
+        return;
+      }
+
+      res.setHeader('content-type', 'text/html; charset=utf-8');
+      res.write(`<!DOCTYPE html>
 <html lang="en">
 <head>
   <meta charset="UTF-8">
@@ -34,227 +75,139 @@ describe('domains.ts', () => {
   <title>Document</title>
 </head>
 <body>
-  <section class="pageHeader">
-    <h1 class="primaryFontColor">Domain Renewals</h1>
-  </section>
-  <section class="renewalContent">
-  </section>
+  <table>
+    <thead>${tableHeader}</thead>
+    <tbody>${domainforRows.map(domainRow).join('\n')}</tbody>
+  </table>
 </body>
-</html>`
-        })
-      ) as typeof axios.get;
-      try {
-        await renewable('https://my.freenom.com/domains.php?a=renewals', [
-          'test=test',
-          'test1=test1'
-        ]);
-        expect('Should throw error').toBe('');
-      } catch (e) {
-        expect(e).toBeInstanceOf(Error);
-        expect((e as Error).message).toMatch(/table.*not found/i);
-      }
-      expect(axios.get).toHaveBeenCalledTimes(1);
+</html>`);
+      res.end();
     });
 
-    it('table with incorrect rows', async () => {
-      axios.get = jest.fn(async () =>
-        Promise.resolve({
-          data: `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Document</title>
-</head>
-<body>
-  <section class="pageHeader">
-    <h1 class="primaryFontColor">Domain Renewals</h1>
-  </section>
-  <section class="renewalContent">
-    <div class="row centered margin padding">
-      <div class="container">
-        <div class="col-md-12">
-          <p>Secure your domain(s) by adding more years to them. Choose how many years you want to renew for and then
-            submit to continue.</p><br>
-          <form method="post" action="domains.php?submitrenewals=true">
-            <input type="hidden" name="token" value="test">
-            <table class="table table-striped table-bordered" cellspacing="1" align="center">
-              <thead>
-                <tr><th>Domain</th><th>Status</th><th>Days Until Expiry</th><th></th><th></th></tr>
-              </thead>
-              <tbody>
-                <tr><td>Active</td><td><span class="textred">25 Days</span></td><td><span class="textgreen">Renewable</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=111">Renew This Domain</a></td>
-                </tr>
-                <tr><td>test1.tk</td><td>unknown</td><td><span class="textgreen">unknown</span></td><td><span class="textred">unknown</span></td><td>Renew This Domain</td>
-                </tr>
-                <tr><td>test2.ml</td><td>Active</td><td><span class="textgreen">40 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight">Renew This Domain</a></td>
-                </tr>
-                <tr><td>agato.tk</td><td>Active</td><td><span class="textgreen">14 Days</span></td><td><span class="textgreen">Renewable</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=114">Renew This Domain</a></td>
-                </tr>
-                <tr><td>foxy.tk</td><td>Active</td><td><span class="textgreen">171 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span> </td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=115">Renew This Domain</a></td>
-                </tr>
-                <tr><td>qui-quo.tk</td><td>Active</td><td><span class="textgreen">312 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=116">Renew This Domain</a></td>
-                </tr>
-              </tbody>
-            </table>
-          </form>
-          <br>
-        </div>
-      </div>
-    </div>
-  </section>
-</body>
-</html>`
-        })
-      ) as typeof axios.get;
-      const { domains, errors } = await renewable('https://my.freenom.com/domains.php?a=renewals', [
-        'test=test',
-        'test1=test1'
-      ]);
-      expect(domains).toStrictEqual([
+    beforeAll(async () => {
+      await server.start();
+    });
+
+    afterAll(async () => {
+      await server.stop();
+    });
+
+    it('renewable: success', async () => {
+      const domains = await renewable(server.address + '/domains?a=renewals', {
+        'user-agent': 'Mozilla/5.0',
+        cookie: 'WHMCSZ=session; WHMCSUser=test; WHMCSItemsPerPage=-1'
+      });
+      expect(domains).toEqual([
         {
-          id: 114,
-          name: 'agato.tk',
-          isActive: true,
+          id: 111,
+          name: 'test1.tk',
+          status: 'Active',
           daysLeft: 14,
-          minRenewalDays: NaN,
-          renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=114'
+          renewUrl: `${server.address}/domains.php?a=renewdomain&domain=111`
         },
         {
-          id: 115,
-          name: 'foxy.tk',
-          isActive: true,
-          daysLeft: 171,
-          minRenewalDays: 14,
-          renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=115'
-        },
-        {
-          id: 116,
-          name: 'qui-quo.tk',
-          isActive: true,
-          daysLeft: 312,
-          minRenewalDays: 14,
-          renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=116'
+          id: 112,
+          name: 'test2.tk',
+          status: 'Active',
+          daysLeft: 28,
+          renewUrl: `${server.address}/domains.php?a=renewdomain&domain=112`
         }
       ]);
-      expect(errors?.map((s) => s.match(/(row #\d+)/i)?.at(1))).toEqual([
-        'row #0',
-        'row #1',
-        'row #2'
-      ]);
-      expect(axios.get).toHaveBeenCalledTimes(1);
     });
 
-    it('success', async () => {
-      axios.get = jest.fn(async () =>
-        Promise.resolve({
-          data: `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta http-equiv="X-UA-Compatible" content="IE=edge">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>Document</title>
-</head>
-<body>
-  <section class="pageHeader">
-    <h1 class="primaryFontColor">Domain Renewals</h1>
-  </section>
-  <section class="renewalContent">
-    <div class="row centered margin padding">
-      <div class="container">
-        <div class="col-md-12">
-          <p>Secure your domain(s) by adding more years to them. Choose how many years you want to renew for and then
-            submit to continue.</p><br>
-          <form method="post" action="domains.php?submitrenewals=true">
-            <input type="hidden" name="token" value="test">
-            <table class="table table-striped table-bordered" cellspacing="1" align="center">
-              <thead>
-                <tr><th>Domain</th><th>Status</th><th>Days Until Expiry</th><th></th><th></th></tr>
-              </thead>
-              <tbody>
-                <tr><td>lead.gq</td><td>Active</td><td><span class="textred">13 Days</span></td><td><span class="textgreen">Renewable</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=111">Renew This Domain</a></td>
-                </tr>
-                <tr><td>liorro.tk</td><td>Active</td><td><span class="textgreen">39 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=112">Renew This Domain</a></td>
-                </tr>
-                <tr><td>notezz.ml</td><td>Active</td><td><span class="textgreen">40 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=113">Renew This Domain</a></td>
-                </tr>
-                <tr><td>agato.tk</td><td>Active</td><td><span class="textgreen">164 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=114">Renew This Domain</a></td>
-                </tr>
-                <tr><td>foxy.tk</td><td>Active</td><td><span class="textgreen">171 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span> </td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=115">Renew This Domain</a></td>
-                </tr>
-                <tr><td>qui-quo.tk</td><td>Active</td><td><span class="textgreen">312 Days</span></td><td><span class="textred">Minimum Advance Renewal is 14 Days for Free Domains</span></td><td><a class="smallBtn greyBtn pullRight" href="domains.php?a=renewdomain&amp;domain=116">Renew This Domain</a></td>
-                </tr>
-              </tbody>
-            </table>
-          </form>
-          <br>
-        </div>
-      </div>
-    </div>
-  </section>
-</body>
-</html>`
-        })
-      ) as typeof axios.get;
-      const domains = await renewable('https://my.freenom.com/domains.php?a=renewals', [
-        'test=test',
-        'test1=test1'
-      ]);
-      expect(axios.get).toHaveBeenCalledTimes(1);
-      expect(domains).toStrictEqual({
-        domains: [
-          {
-            id: 111,
-            name: 'lead.gq',
-            isActive: true,
-            daysLeft: 13,
-            minRenewalDays: NaN,
-            renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=111'
-          },
-          {
-            id: 112,
-            name: 'liorro.tk',
-            isActive: true,
-            daysLeft: 39,
-            minRenewalDays: 14,
-            renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=112'
-          },
-          {
-            id: 113,
-            name: 'notezz.ml',
-            isActive: true,
-            daysLeft: 40,
-            minRenewalDays: 14,
-            renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=113'
-          },
-          {
-            id: 114,
-            name: 'agato.tk',
-            isActive: true,
-            daysLeft: 164,
-            minRenewalDays: 14,
-            renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=114'
-          },
-          {
-            id: 115,
-            name: 'foxy.tk',
-            isActive: true,
-            daysLeft: 171,
-            minRenewalDays: 14,
-            renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=115'
-          },
-          {
-            id: 116,
-            name: 'qui-quo.tk',
-            isActive: true,
-            daysLeft: 312,
-            minRenewalDays: 14,
-            renewUrl: 'https://my.freenom.com/domains.php?a=renewdomain&domain=116'
-          }
-        ]
+    it('renewable: cells has errors', async () => {
+      const _domainforRows = domainforRows;
+      domainforRows = [
+        {
+          domain: '',
+          status: 'Active',
+          days: 14,
+          id: 111
+        },
+        {
+          domain: 'test2.tk',
+          status: 'Active',
+          id: 112
+        },
+        {
+          domain: 'test3.tk',
+          status: '',
+          days: 22,
+          id: 113
+        }
+      ];
+      const domains = await renewable(server.address + '/domains?a=renewals', {
+        'user-agent': 'Mozilla/5.0',
+        cookie: 'WHMCSZ=session; WHMCSUser=test; WHMCSItemsPerPage=-1'
       });
+      expect(domains).toEqual([
+        { error: '"name" property not detected in cell 0, row 0' },
+        { error: '"daysLeft" property not detected in cell 3 (domain, "test2.tk"), row 1' },
+        {
+          id: 113,
+          name: 'test3.tk',
+          status: '',
+          daysLeft: 22,
+          renewUrl: `${server.address}/domains.php?a=renewdomain&domain=113`
+        }
+      ]);
+      domainforRows = _domainforRows;
+    });
+
+    it('renewable: wrong table header', async () => {
+      const _tableHeader = tableHeader;
+      tableHeader =
+        '<tr><th>Domain</th><th>Status</th><th>Days To Expiry</th><th></th><th></th></tr>';
+      try {
+        await renewable(server.address + '/domains?a=renewals', {
+          'user-agent': 'Mozilla/5.0',
+          cookie: 'WHMCSZ=session; WHMCSUser=test; WHMCSItemsPerPage=-1'
+        });
+        expect('Should throw error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/table of domains not found/i);
+      }
+      tableHeader = _tableHeader;
+    });
+
+    it('renewable: request fail', async () => {
+      try {
+        await renewable(server.address + '/domains?a=renewals', {
+          'user-agent': 'Chrome/5.0',
+          cookie: 'WHMCSZ=session; WHMCSUser=test; WHMCSItemsPerPage=-1'
+        });
+        expect('Should throw error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/request [^\s]+ failed/i);
+      }
+    });
+
+    it('renewable: request fail, redirect', async () => {
+      try {
+        await renewable(server.address + '/domains?a=renewals', {
+          'user-agent': 'Mozilla/5.0',
+          cookie: 'WHMCSItemsPerPage=-1'
+        });
+        expect('Should throw error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/request [^\s]+ failed/i);
+      }
+    });
+
+    it('renewable: not html response', async () => {
+      try {
+        await renewable(server.address + '/some-page', {
+          'user-agent': 'Mozilla/5.0',
+          cookie: 'WHMCSZ=session; WHMCSUser=test; WHMCSItemsPerPage=-1'
+        });
+        expect('Should throw error').toBe('');
+      } catch (e) {
+        expect(e).toBeInstanceOf(Error);
+        expect((e as Error).message).toMatch(/unsupported content-type/i);
+      }
     });
   });
 });
