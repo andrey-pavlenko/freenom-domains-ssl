@@ -27,7 +27,6 @@
     "typescript": "^4.8.3"
   },
   "dependencies": {
-    "axios": "^0.27.2",
     "content-type": "^1.0.4",
     "jsdom": "^20.0.0"
   }
