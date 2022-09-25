@@ -47,6 +47,21 @@ importers:
       ts-node: 10.9.1_xncqeq3xkoqhng77wx5a5ihsty
       typescript: 4.8.3
 
+  check-ssl-expire:
+    specifiers:
+      '@freenom/logger': workspace:^0.0.1
+      '@freenom/notifier': workspace:^0.0.1
+      '@types/node': ^18.7.18
+      ts-node: ^10.9.1
+      typescript: ^4.8.3
+    dependencies:
+      '@freenom/logger': link:../logger
+      '@freenom/notifier': link:../notifier
+    devDependencies:
+      '@types/node': 18.7.20
+      ts-node: 10.9.1_xncqeq3xkoqhng77wx5a5ihsty
+      typescript: 4.8.3
+
   fake-server:
     specifiers:
       '@types/node': ^18.7.20

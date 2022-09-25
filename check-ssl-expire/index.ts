@@ -1,26 +1,73 @@
 import { request } from 'https';
 import { TLSSocket } from 'tls';
-import log4js from 'log4js';
-import axios from 'axios';
+import { logLevels, Level, configure, logger } from '@freenom/logger';
+import { email, createEmailTransport, alarmer } from '@freenom/notifier';
 
-/*
-https://github.com/rheh/ssl-date-checker/blob/master/src/Checker.js
-https://nodejs.org/api/tls.html#tlssocketgetpeercertificatedetailed
-*/
+async function main() {
+  await (async () => {
+    const logLevel: Level = ((v) => {
+      if (logLevels.includes(v as Level)) {
+        return v as Level;
+      } else {
+        return logLevels[0];
+      }
+    })(process.env.LOGLEVEL ?? 'debug');
+    await configure(logLevel);
+  })();
 
-log4js.configure({
-  appenders: {
-    out: {
-      type: 'stdout',
-      layout: { type: 'pattern', pattern: '%d{yyyy-MM-dd hh:mm:ss,SSS} [%-5p] -- %m' }
-    }
-  },
-  categories: {
-    default: { appenders: ['out'], level: process.env.LOGLEVEL ?? 'all' }
+  try {
+    await check(getOptions());
+  } catch (e) {
+    logger.fatal(e);
   }
-});
+}
 
-const logger = log4js.getLogger();
+function getOptions() {
+  const missing: string[] = [];
+
+  const hosts = (process.env.HOSTS ?? '').split(/\s*,\s*/).filter((s) => !!s);
+  if (hosts.length === 0) {
+    missing.push('HOSTS');
+  }
+
+  for (const key of [
+    'NOTIFY_ALARMER_API_KEY',
+    'NOTIFY_SMTP_HOST',
+    'NOTIFY_SMTP_USER',
+    'NOTIFY_SMTP_PASS'
+  ]) {
+    if (!process.env[key]) {
+      missing.push(key);
+    }
+  }
+
+  const notifyDaysLeft = +(process.env.NOTIFY_DAYS_LEFT ?? 'NaN');
+  if (!(notifyDaysLeft > 0)) {
+    missing.push('NOTIFY_DAYS_LEFT');
+  }
+
+  const notifySmtpPort = +(process.env.NOTIFY_SMTP_PORT ?? 'NaN');
+  if (!(notifySmtpPort > 0)) {
+    missing.push('NOTIFY_SMTP_PORT');
+  }
+
+  if (missing.length) {
+    throw new Error(
+      'The following environment variables are missing from the .env file: ' +
+        missing.map((s) => `"${s}"`).join(', ')
+    );
+  }
+
+  return {
+    hosts,
+    notifyDaysLeft,
+    notifyAlarmerApiKey: process.env.NOTIFY_ALARMER_API_KEY as string,
+    notifySmtpHost: process.env.NOTIFY_SMTP_HOST as string,
+    notifySmtpPort,
+    notifySmtpUser: process.env.NOTIFY_SMTP_USER as string,
+    notifySmtpPass: process.env.NOTIFY_SMTP_PASS as string
+  };
+}
 
 export interface CertificateInfo {
   host: string;
@@ -31,31 +78,7 @@ export interface CertificateInfo {
   subjectaltname: string;
 }
 
-const options = {
-  hosts: (process.env.HOSTS ?? '').split(/\s*,\s*/).filter((s) => !!s),
-  notify_days_left: +(process.env.NOTIFY_DAYS_LEFT ?? '1'),
-  alarmer_api_key: process.env.ALARMER_API_KEY,
-  alarmer_url: 'https://alarmerbot.ru',
-  check() {
-    const errors: string[] = [];
-    if (this.hosts.length === 0) {
-      errors.push('process.env.HOSTS is empty, no hosts to check');
-    }
-    if (isNaN(this.notify_days_left) || this.notify_days_left <= 0) {
-      errors.push(
-        `invalid process.env.NOTIFY_DAYS_LEFT value "${process.env.NOTIFY_DAYS_LEFT}", should be a positive number`
-      );
-    }
-    if (!this.alarmer_api_key) {
-      errors.push('process.env.ALARMER_API_KEY is empty, unable to send notifications');
-    }
-    if (errors.length) {
-      throw new Error(errors.join('; '));
-    }
-  }
-};
-
-async function getCertificate(host: string, port?: number): Promise<CertificateInfo> {
+export async function getCertificate(host: string, port?: number): Promise<CertificateInfo> {
   return new Promise((resolve, reject) => {
     const rq = request({ host, port, method: 'GET', rejectUnauthorized: false }, (res) => {
       if (res.socket instanceof TLSSocket) {
@@ -70,101 +93,130 @@ async function getCertificate(host: string, port?: number): Promise<CertificateI
         };
         resolve(info);
       } else {
-        reject(new Error('socet is not TLSSocket instance'));
+        reject(new Error('socket is not TLSSocket instance'));
       }
     });
-
     rq.on('error', reject);
-
     rq.end();
   });
 }
 
-async function notify(
-  aboutExpire: CertificateInfo[],
-  errors?: Record<string, Error>[]
-): Promise<string> {
-  const expiringMessage = aboutExpire.length
-    ? `The following certificates expire in ${options.notify_days_left} days:\n\n${aboutExpire
-        .map(
-          (c) =>
-            `${c.issuer}: ${
-              c.subjectaltname ?? c.subject
-            }\nexpires ${c.valid_to.toLocaleDateString()}`
-        )
-        .join('\n\n')}`
-    : '';
-  const errorsMessage =
-    errors && errors.length
-      ? `Got hosts errors:\n\n${errors
-          .map((e) => {
-            const [host, error] = Object.entries(e)[0];
-            return `${host}: ${error.message}`;
-          })
-          .join('\n')}`
-      : '';
-  const message = ['Checking the expiration date of #certificates', expiringMessage, errorsMessage]
-    .filter((s) => !!s)
-    .join('\n\n');
-  const rs = await axios.get(
-    options.alarmer_url +
-      '?' +
-      new URLSearchParams({ key: options.alarmer_api_key ?? '', message }).toString()
-  );
-  return `${rs.status}: ${rs.statusText}`;
-}
+async function check(options: ReturnType<typeof getOptions>) {
+  type AddressSuccess = { address: string; certificate: CertificateInfo; daysLeft?: number };
+  type AddressError = { address: string; error: string };
+  type AddressResult = AddressSuccess | AddressError;
 
-async function task() {
-  logger.info('=== Check SSL certifitates expiration: task start ===');
-  try {
-    options.check();
-    const expiredEdgeDate = (() => {
-      const edge = new Date();
-      edge.setDate(edge.getDate() + options.notify_days_left);
-      return edge;
-    })();
-    const errors: Record<string, Error>[] = [];
-    const valid: CertificateInfo[] = [];
-    const aboutExpire: CertificateInfo[] = [];
-    const convertDatesToLocale = (info: CertificateInfo) => ({
-      ...info,
-      valid_from: info.valid_from.toLocaleString(),
-      valid_to: info.valid_to.toLocaleString()
-    });
-    for (const host of options.hosts) {
-      try {
-        const info = await getCertificate(host);
-        if (info.valid_to <= expiredEdgeDate) {
-          aboutExpire.push(info);
+  logger.info('=== Check SSL certificates expiration: task start ===');
+
+  const certificates: AddressResult[] = await Promise.all(
+    options.hosts.map((h) => {
+      const [host, port] = ((address) => {
+        const s = address.split(':');
+        if (s[1]) {
+          const port = +(s[1] ?? 'NaN');
+          return [s[0], isFinite(port) && port > 0 ? port : undefined];
         } else {
-          valid.push(info);
+          return [s[0]];
         }
-      } catch (e) {
-        errors.push({ [host]: e as Error });
-      }
-    }
-    if (errors.length) {
-      logger.error('Got hosts errors:', errors);
-    }
-    if (aboutExpire.length) {
-      logger.info('Certificate expiration notice', aboutExpire.map(convertDatesToLocale));
+      })(h);
+      return new Promise<AddressResult>((resolve) => {
+        getCertificate(host, port)
+          .then((c) => resolve({ address: h, certificate: c }))
+          .catch((e) => resolve({ address: h, error: (e as Error).message }));
+      });
+    })
+  );
+
+  const errors: AddressError[] = [];
+  let expiring: AddressSuccess[] = [];
+  let valid: AddressSuccess[] = [];
+  const now = Date.now();
+
+  for (const c of certificates) {
+    if ('error' in c) {
+      errors.push(c);
     } else {
-      logger.info('No certificates expiring');
-    }
-    if (valid.length) {
-      logger.debug('Valid certificates', valid.map(convertDatesToLocale));
-    }
-    if (aboutExpire.length || errors.length) {
-      try {
-        logger.debug(`Alarmer response: "${await notify(aboutExpire, errors)}"`);
-      } catch (e) {
-        logger.error('Alarmer request failed:', e);
+      c.daysLeft = Math.ceil((c.certificate.valid_to.getTime() - now) / (1000 * 60 * 60 * 24));
+      if (c.daysLeft <= options.notifyDaysLeft) {
+        expiring.push(c);
+      } else {
+        valid.push(c);
       }
     }
-  } catch (e) {
-    logger.fatal('=== Check SSL certifitates expiration failed:', e, '===');
   }
-  logger.info('=== Check SSL certifitates expiration: task end ===');
+
+  expiring = expiring.sort((a, b) => (a.daysLeft ?? 0) - (b.daysLeft ?? 0));
+  valid = valid.sort((a, b) => (a.daysLeft ?? 0) - (b.daysLeft ?? 0));
+
+  if (errors.length) {
+    logger.error(
+      'SSL request errors:',
+      errors.map((e) => `${e.address}: ${e.error}`)
+    );
+  }
+
+  if (expiring.length) {
+    logger.warn(
+      'Certificates are expiring soon:',
+      expiring.map(
+        (a) =>
+          `${a.address} expires within ${a.daysLeft} days. Issuer: ${
+            a.certificate.issuer
+          }, hosts: ${a.certificate.subjectaltname || a.certificate.host}`
+      )
+    );
+  }
+
+  if (valid.length) {
+    logger.info(
+      'Valid certificates:',
+      valid.map((a) => `${a.address} is valid for ${a.daysLeft} days`)
+    );
+  }
+
+  if (expiring.length) {
+    let message = '';
+    if (errors.length) {
+      message += `SSL #certificates errors:\n\n${errors
+        .map((a) => `${a.address}: ${a.error}`)
+        .join('\n')}\n\n\n`;
+    }
+    message += `SSL #certificates are expiring soon:\n\n${expiring
+      .map(
+        (a) =>
+          `${a.address} expires within ${a.daysLeft} days. , hosts: ${
+            a.certificate.subjectaltname || a.certificate.host
+          }`
+      )
+      .join('\n')}`;
+
+    try {
+      createEmailTransport({
+        host: options.notifySmtpHost,
+        port: options.notifySmtpPort,
+        user: options.notifySmtpUser,
+        pass: options.notifySmtpPass
+      });
+      await email({
+        from: options.notifySmtpUser,
+        to: options.notifySmtpUser,
+        subject: 'SSL certificates expiration report',
+        text: message
+      });
+      logger.trace('Email notification sent successfully');
+    } catch (e) {
+      logger.error('Failed to send email notification', e);
+    }
+    try {
+      await alarmer(options.notifyAlarmerApiKey, message);
+      logger.trace('Alarmer notification sent successfully');
+    } catch (e) {
+      logger.error('Failed to send Alarmer notification', e);
+    }
+  }
+  logger.info('=== Check SSL certificates expiration: task end ===');
 }
 
-task();
+if (process.env.NODE_ENV !== 'test') {
+  main();
+}
